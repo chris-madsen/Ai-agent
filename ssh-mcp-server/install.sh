@@ -113,6 +113,23 @@ fi
 echo "$TUNNEL_TOKEN" > "$CF_DIR/token"
 chmod 600 "$CF_DIR/token"
 
+# --- Configure ingress rules via Cloudflare API ---
+log "Configuring tunnel ingress rules for $CF_DOMAIN -> localhost:$MCP_PORT ..."
+INGRESS_PAYLOAD=$(jq -n \
+    --arg hostname "$CF_DOMAIN" \
+    --arg service "http://localhost:$MCP_PORT" \
+    '{
+        config: {
+            ingress: [
+                { hostname: $hostname, service: $service },
+                { service: "http_status:404" }
+            ]
+        }
+    }')
+cf_api PUT "/accounts/${ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations" \
+    --data "$INGRESS_PAYLOAD" >/dev/null
+log "Ingress rules configured."
+
 log "Configuring DNS for $CF_DOMAIN..."
 CNAME="${TUNNEL_ID}.cfargotunnel.com"
 DNS_RESP=$(curl -sS \
