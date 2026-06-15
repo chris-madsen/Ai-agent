@@ -6,7 +6,7 @@ log()   { echo -e "${GREEN}[INFO]${NC}  $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 die()   { echo -e "${RED}[ERR]${NC}   $*"; exit 1; }
 
-# Note: intentionally no -f flag so curl always returns body even on 4xx/5xx
+# curl without -f so we always get the response body even on 4xx/5xx
 cf_api() {
     local METHOD="$1"; local URL="$2"; shift 2
     local RESP HTTP_CODE
@@ -17,7 +17,7 @@ cf_api() {
     HTTP_CODE=$(echo "$RESP" | grep '__HTTP_CODE__' | sed 's/__HTTP_CODE__//')
     RESP=$(echo "$RESP" | grep -v '__HTTP_CODE__')
     if ! echo "$RESP" | jq -e '.success == true' >/dev/null 2>&1; then
-        die "CF API ${METHOD} ${URL} failed (HTTP ${HTTP_CODE}): $(echo "$RESP" | jq -r '.errors[0].message // .errors // .message // empty' 2>/dev/null || echo "$RESP")"
+        die "CF API ${METHOD} ${URL} failed (HTTP ${HTTP_CODE}): $(echo "$RESP" | jq -r '.errors[0].message // .errors // empty' 2>/dev/null || echo "$RESP")"
     fi
     echo "$RESP"
 }
@@ -69,12 +69,12 @@ chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 log "Fetching Cloudflare Zone ID for $ZONE_NAME..."
 ZONE_RESP=$(cf_api GET "/zones?name=${ZONE_NAME}&status=active")
 ZONE_ID=$(echo "$ZONE_RESP" | jq -r '.result[0].id // empty')
-[[ -n "$ZONE_ID" ]] || die "Zone '$ZONE_NAME' not found. Check CF_TOKEN has Zone:Read permission for this zone."
+[[ -n "$ZONE_ID" ]] || die "Zone '$ZONE_NAME' not found. Is it added to Cloudflare and the token has Zone:Read?"
 log "Zone ID: $ZONE_ID"
 
-log "Fetching Cloudflare Account ID..."
-ACCOUNT_ID=$(cf_api GET "/accounts" | jq -r '.result[0].id // empty')
-[[ -n "$ACCOUNT_ID" ]] || die "Could not get Account ID. Check CF_TOKEN has Account:Read permission."
+# Account ID — extracted from Zone's account field, no extra permissions needed
+ACCOUNT_ID=$(echo "$ZONE_RESP" | jq -r '.result[0].account.id // empty')
+[[ -n "$ACCOUNT_ID" ]] || die "Could not extract Account ID from zone response"
 log "Account ID: $ACCOUNT_ID"
 
 log "Setting up tunnel '$TUNNEL_NAME'..."
