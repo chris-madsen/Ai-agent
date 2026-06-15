@@ -29,6 +29,7 @@ SERVICE_USER="mcpserver"
 CF_DIR="/etc/cloudflared"
 TUNNEL_NAME="ssh-mcp-tunnel"
 TOKEN_BACKUP="/etc/mcp-server-token"
+SUDOERS_FILE="/etc/sudoers.d/mcpserver"
 
 [[ $EUID -ne 0 ]] && die "Run as root: sudo -E bash install.sh"
 
@@ -57,6 +58,12 @@ fi
 
 id "$SERVICE_USER" >/dev/null 2>&1 \
     || useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
+
+# Give mcpserver passwordless sudo
+log "Configuring sudoers for $SERVICE_USER..."
+echo "${SERVICE_USER} ALL=(ALL) NOPASSWD: ALL" > "$SUDOERS_FILE"
+chmod 440 "$SUDOERS_FILE"
+log "Sudoers configured."
 
 log "Installing MCP server..."
 mkdir -p "$INSTALL_DIR" "$CF_DIR"
