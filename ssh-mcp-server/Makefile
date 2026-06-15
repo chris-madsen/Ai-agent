@@ -23,8 +23,6 @@ test-live:
 	@TOKEN=$$(cat /opt/ssh-mcp-server/.auth_token) bash tests/integration.sh $$TOKEN
 
 update:
-	git pull origin master
-	sudo cp server.py /opt/ssh-mcp-server/server.py
 	sudo /opt/ssh-mcp-server/.venv/bin/pip install -q -r requirements.txt
 	sudo systemctl restart ssh-mcp-server
 	sudo systemctl status ssh-mcp-server --no-pager
