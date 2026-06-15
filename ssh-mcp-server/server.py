@@ -5,7 +5,10 @@ import os
 from typing import Any
 
 import paramiko
+import uvicorn
 from mcp.server.fastmcp import FastMCP
+from mcp.server.streamable_http import StreamableHTTPServerTransport
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -17,7 +20,10 @@ AUTH_TOKEN = os.getenv("MCP_AUTH_TOKEN", "")
 HOST = os.getenv("MCP_HOST", "127.0.0.1")
 PORT = int(os.getenv("MCP_PORT", "8080"))
 
-mcp = FastMCP("ssh-mcp-server")
+mcp = FastMCP(
+    "ssh-mcp-server",
+    stateless_http=True,
+)
 
 
 # --- SSH/SFTP helpers ---
@@ -115,7 +121,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
 # --- Entry point ---
 
 if __name__ == "__main__":
-    import uvicorn
     logger.info(f"Starting SSH MCP Server on {HOST}:{PORT}/mcp")
     app = mcp.streamable_http_app()
     app.add_middleware(AuthMiddleware)
