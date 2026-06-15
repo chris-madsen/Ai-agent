@@ -25,7 +25,6 @@ cf_api() {
 : "${CF_DOMAIN:?CF_DOMAIN required}"
 MCP_PORT="${MCP_PORT:-8080}"
 INSTALL_DIR="/opt/ssh-mcp-server"
-SERVICE_USER="mcpserver"
 CF_DIR="/etc/cloudflared"
 TUNNEL_NAME="ssh-mcp-tunnel"
 
@@ -54,16 +53,12 @@ else
     log "cloudflared already installed: $(cloudflared --version)"
 fi
 
-id "$SERVICE_USER" >/dev/null 2>&1 \
-    || useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
-
 log "Installing MCP server..."
 mkdir -p "$INSTALL_DIR" "$CF_DIR"
 cp server.py requirements.txt "$INSTALL_DIR/"
 python3 -m venv "$INSTALL_DIR/.venv"
 "$INSTALL_DIR/.venv/bin/pip" install --upgrade pip -q
 "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" -q
-chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
 # Generate auth token once, reuse on reinstall
 AUTH_TOKEN_FILE="$INSTALL_DIR/.auth_token"
@@ -74,7 +69,6 @@ else
     MCP_AUTH_TOKEN=$(openssl rand -hex 32)
     echo "$MCP_AUTH_TOKEN" > "$AUTH_TOKEN_FILE"
     chmod 600 "$AUTH_TOKEN_FILE"
-    chown "$SERVICE_USER:$SERVICE_USER" "$AUTH_TOKEN_FILE"
     log "Generated new auth token."
 fi
 
@@ -147,7 +141,7 @@ else
 fi
 
 log "Installing systemd units..."
-sed "s|__MCP_PORT__|${MCP_PORT}|g; s|__INSTALL_DIR__|${INSTALL_DIR}|g; s|__SERVICE_USER__|${SERVICE_USER}|g; s|__MCP_AUTH_TOKEN__|${MCP_AUTH_TOKEN}|g" \
+sed "s|__MCP_PORT__|${MCP_PORT}|g; s|__INSTALL_DIR__|${INSTALL_DIR}|g; s|__MCP_AUTH_TOKEN__|${MCP_AUTH_TOKEN}|g" \
     ssh-mcp-server.service > /etc/systemd/system/ssh-mcp-server.service
 install -m644 cloudflared.slice   /etc/systemd/system/cloudflared.slice
 install -m644 cloudflared.service /etc/systemd/system/cloudflared.service
