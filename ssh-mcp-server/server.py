@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import subprocess
 
 import paramiko
 import uvicorn
@@ -35,6 +36,31 @@ def _connect(host, port, username, key_path):
 
 
 # ---------- MCP Tools ----------
+
+@mcp.tool()
+def local_execute(
+    command: str,
+    timeout: int = 30,
+) -> str:
+    """Execute a shell command locally on the MCP server itself."""
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return json.dumps({
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.returncode,
+        }, ensure_ascii=False, indent=2)
+    except subprocess.TimeoutExpired:
+        return json.dumps({"error": f"Command timed out after {timeout}s"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
 
 @mcp.tool()
 def ssh_execute(
@@ -111,7 +137,6 @@ def sftp_download(
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        # Read at request time so tests and server always use the same live env value.
         auth_token = os.getenv("MCP_AUTH_TOKEN", "")
         if auth_token and request.headers.get("Authorization") != f"Bearer {auth_token}":
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
