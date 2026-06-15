@@ -28,6 +28,7 @@ INSTALL_DIR="/opt/ssh-mcp-server"
 SERVICE_USER="mcpserver"
 CF_DIR="/etc/cloudflared"
 TUNNEL_NAME="ssh-mcp-tunnel"
+TOKEN_BACKUP="/etc/mcp-server-token"
 
 [[ $EUID -ne 0 ]] && die "Run as root: sudo -E bash install.sh"
 
@@ -65,9 +66,16 @@ python3 -m venv "$INSTALL_DIR/.venv"
 "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" -q
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
-# Generate auth token once, reuse on reinstall
+# Restore token from backup (survives uninstall), else reuse existing, else generate new
 AUTH_TOKEN_FILE="$INSTALL_DIR/.auth_token"
-if [[ -f "$AUTH_TOKEN_FILE" ]]; then
+if [[ -f "$TOKEN_BACKUP" ]]; then
+    MCP_AUTH_TOKEN=$(cat "$TOKEN_BACKUP")
+    cp "$TOKEN_BACKUP" "$AUTH_TOKEN_FILE"
+    chmod 600 "$AUTH_TOKEN_FILE"
+    chown "$SERVICE_USER:$SERVICE_USER" "$AUTH_TOKEN_FILE"
+    rm -f "$TOKEN_BACKUP"
+    log "Restored auth token from backup."
+elif [[ -f "$AUTH_TOKEN_FILE" ]]; then
     MCP_AUTH_TOKEN=$(cat "$AUTH_TOKEN_FILE")
     log "Reusing existing auth token."
 else

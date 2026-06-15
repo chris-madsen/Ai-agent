@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import subprocess
 
 import paramiko
 import uvicorn
@@ -35,6 +36,33 @@ def _connect(host, port, username, key_path):
 
 
 # ---------- MCP Tools ----------
+
+@mcp.tool()
+def local_execute(
+    command: str,
+    timeout: int = 30,
+    working_dir: str = None,
+) -> str:
+    """Execute a shell command locally on the MCP server via subprocess."""
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=working_dir,
+        )
+        return json.dumps({
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.returncode,
+        }, ensure_ascii=False, indent=2)
+    except subprocess.TimeoutExpired:
+        return json.dumps({"error": f"Command timed out after {timeout}s"}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
 
 @mcp.tool()
 def ssh_execute(

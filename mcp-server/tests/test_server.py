@@ -69,7 +69,7 @@ TOOLS_LIST_PAYLOAD = {
     "id": 2,
 }
 
-EXPECTED_TOOLS = {"ssh_execute", "sftp_upload", "sftp_download"}
+EXPECTED_TOOLS = {"ssh_execute", "sftp_upload", "sftp_download", "local_execute"}
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +100,18 @@ def test_unit_list_tools(unit_client):
         assert tool in r.text, f"Tool {tool!r} missing from response"
 
 
+def test_unit_local_execute(unit_client):
+    payload = {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {"name": "local_execute", "arguments": {"command": "echo hello"}},
+        "id": 3,
+    }
+    r = unit_client.post("/mcp", json=payload, headers=_headers(_token()))
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+    assert "hello" in r.text, f"Expected 'hello' in response: {r.text}"
+
+
 # ---------------------------------------------------------------------------
 # E2e tests — live HTTP against the running server
 # ---------------------------------------------------------------------------
@@ -126,3 +138,15 @@ def test_e2e_list_tools(e2e_client):
     assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
     for tool in EXPECTED_TOOLS:
         assert tool in r.text, f"Tool {tool!r} missing from response"
+
+
+def test_e2e_local_execute(e2e_client):
+    payload = {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {"name": "local_execute", "arguments": {"command": "echo hello"}},
+        "id": 3,
+    }
+    r = e2e_client.post("/mcp", json=payload, headers=_headers(_token()))
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+    assert "hello" in r.text, f"Expected 'hello' in response: {r.text}"
