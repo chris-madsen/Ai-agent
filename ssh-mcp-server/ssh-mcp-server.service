@@ -4,13 +4,14 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
-Group=root
+User=__SERVICE_USER__
+Group=__SERVICE_USER__
 WorkingDirectory=__INSTALL_DIR__
 Environment=MCP_HOST=127.0.0.1
 Environment=MCP_PORT=__MCP_PORT__
-Environment=MCP_AUTH_TOKEN=__MCP_AUTH_TOKEN__
+EnvironmentFile=-/etc/ssh-mcp-server/auth_token.env
 ExecStart=__INSTALL_DIR__/.venv/bin/python __INSTALL_DIR__/server.py
+ExecStartPre=/bin/bash -c 'echo MCP_AUTH_TOKEN=$(cat __AUTH_TOKEN_FILE__) > /etc/ssh-mcp-server/auth_token.env'
 Restart=always
 RestartSec=5s
 MemoryHigh=256M

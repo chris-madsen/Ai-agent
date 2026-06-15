@@ -25,8 +25,12 @@ cf_api() {
 : "${CF_DOMAIN:?CF_DOMAIN required}"
 MCP_PORT="${MCP_PORT:-8080}"
 INSTALL_DIR="/opt/ssh-mcp-server"
+SERVICE_USER="root"
 CF_DIR="/etc/cloudflared"
 TUNNEL_NAME="ssh-mcp-tunnel"
+# Token lives outside INSTALL_DIR so rm -rf /opt/ssh-mcp-server won't nuke it
+TOKEN_DIR="/etc/ssh-mcp-server"
+AUTH_TOKEN_FILE="$TOKEN_DIR/auth_token"
 
 [[ $EUID -ne 0 ]] && die "Run as root: sudo -E bash install.sh"
 
@@ -54,22 +58,21 @@ else
 fi
 
 log "Installing MCP server..."
-mkdir -p "$INSTALL_DIR" "$CF_DIR"
+mkdir -p "$INSTALL_DIR" "$CF_DIR" "$TOKEN_DIR"
 cp server.py requirements.txt "$INSTALL_DIR/"
 python3 -m venv "$INSTALL_DIR/.venv"
 "$INSTALL_DIR/.venv/bin/pip" install --upgrade pip -q
 "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" -q
 
-# Generate auth token once, reuse on reinstall
-AUTH_TOKEN_FILE="$INSTALL_DIR/.auth_token"
+# Generate auth token once, reuse on reinstall (stored outside INSTALL_DIR)
 if [[ -f "$AUTH_TOKEN_FILE" ]]; then
     MCP_AUTH_TOKEN=$(cat "$AUTH_TOKEN_FILE")
-    log "Reusing existing auth token."
+    log "Reusing existing auth token from $AUTH_TOKEN_FILE"
 else
     MCP_AUTH_TOKEN=$(openssl rand -hex 32)
     echo "$MCP_AUTH_TOKEN" > "$AUTH_TOKEN_FILE"
     chmod 600 "$AUTH_TOKEN_FILE"
-    log "Generated new auth token."
+    log "Generated new auth token, saved to $AUTH_TOKEN_FILE"
 fi
 
 log "Fetching Cloudflare Zone ID for $ZONE_NAME..."
@@ -141,7 +144,7 @@ else
 fi
 
 log "Installing systemd units..."
-sed "s|__MCP_PORT__|${MCP_PORT}|g; s|__INSTALL_DIR__|${INSTALL_DIR}|g; s|__MCP_AUTH_TOKEN__|${MCP_AUTH_TOKEN}|g" \
+sed "s|__MCP_PORT__|${MCP_PORT}|g; s|__INSTALL_DIR__|${INSTALL_DIR}|g; s|__SERVICE_USER__|${SERVICE_USER}|g; s|__AUTH_TOKEN_FILE__|${AUTH_TOKEN_FILE}|g" \
     ssh-mcp-server.service > /etc/systemd/system/ssh-mcp-server.service
 install -m644 cloudflared.slice   /etc/systemd/system/cloudflared.slice
 install -m644 cloudflared.service /etc/systemd/system/cloudflared.service
@@ -155,3 +158,4 @@ echo -e "${GREEN}=== Done! ===${NC}"
 echo -e "  Transport: Streamable HTTP"
 echo -e "  URL:       ${YELLOW}https://${CF_DOMAIN}/mcp${NC}"
 echo -e "  Token:     ${YELLOW}${MCP_AUTH_TOKEN}${NC}"
+echo -e "  Token file: ${YELLOW}${AUTH_TOKEN_FILE}${NC}"
