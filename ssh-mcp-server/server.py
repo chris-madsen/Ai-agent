@@ -14,7 +14,6 @@ from starlette.responses import JSONResponse
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-AUTH_TOKEN = os.getenv("MCP_AUTH_TOKEN", "")
 HOST = os.getenv("MCP_HOST", "127.0.0.1")
 PORT = int(os.getenv("MCP_PORT", "8080"))
 
@@ -112,16 +111,16 @@ def sftp_download(
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if AUTH_TOKEN and request.headers.get("Authorization") != f"Bearer {AUTH_TOKEN}":
+        # Read at request time so tests and server always use the same live env value.
+        auth_token = os.getenv("MCP_AUTH_TOKEN", "")
+        if auth_token and request.headers.get("Authorization") != f"Bearer {auth_token}":
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
         return await call_next(request)
 
 
-# ---------- App factory (used by tests too) ----------
+# ---------- App factory ----------
 
 def create_app():
-    # Use public FastMCP.streamable_http_app() — works with mcp>=1.0
-    # DNS rebinding protection disabled so cloudflared can proxy with external Host header
     app = mcp.streamable_http_app()
     app.add_middleware(AuthMiddleware)
     return app

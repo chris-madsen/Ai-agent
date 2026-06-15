@@ -11,16 +11,15 @@ deploy:
 	scp -i "openvpn-ee-ssh.pem" -r * ubuntu@ec2-3-222-67-107.compute-1.amazonaws.com:/home/ubuntu/ssh-mcp-server/
 
 test:
-	@echo "=== Unit tests (in-process ASGI) ==="
-	/opt/ssh-mcp-server/.venv/bin/pip install -q httpx2 pytest anyio
-	PYTHONPATH=$(CURDIR) \
+	@echo "=== Tests (unit + e2e) ==="
+	/opt/ssh-mcp-server/.venv/bin/pip install -q httpx pytest anyio
+	MCP_AUTH_TOKEN=$$(cat /opt/ssh-mcp-server/.auth_token) \
+		MCP_BASE_URL=http://127.0.0.1:8080 \
+		PYTHONPATH=$(CURDIR) \
 		/opt/ssh-mcp-server/.venv/bin/pytest tests/ -v
 
-test-live:
-	@echo "=== Live integration tests ==="
-	@TOKEN=$$(cat /opt/ssh-mcp-server/.auth_token) bash tests/integration.sh $$TOKEN
-
 update:
+	sudo cp server.py /opt/ssh-mcp-server/server.py
 	sudo /opt/ssh-mcp-server/.venv/bin/pip install -q -r requirements.txt
 	sudo systemctl restart ssh-mcp-server
 	sudo systemctl status ssh-mcp-server --no-pager
