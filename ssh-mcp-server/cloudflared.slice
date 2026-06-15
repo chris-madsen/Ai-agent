@@ -1,0 +1,5 @@
+[Slice]
+MemoryHigh=128M
+MemoryMax=192M
+CPUQuota=30%
+TasksMax=32

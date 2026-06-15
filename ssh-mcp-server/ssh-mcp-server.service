@@ -1,0 +1,22 @@
+[Unit]
+Description=SSH MCP Server
+After=network.target
+
+[Service]
+Type=simple
+User=mcpserver
+Group=mcpserver
+WorkingDirectory=/opt/ssh-mcp-server
+Environment=MCP_HOST=127.0.0.1
+Environment=MCP_PORT=8080
+ExecStart=/opt/ssh-mcp-server/.venv/bin/python /opt/ssh-mcp-server/server.py
+Restart=always
+RestartSec=5s
+MemoryHigh=256M
+MemoryMax=384M
+CPUQuota=60%
+TasksMax=64
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target
