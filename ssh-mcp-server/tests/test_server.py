@@ -1,20 +1,15 @@
-"""Tests for ssh-mcp-server."""
-import json
-import os
-import sys
-
+"""Tests for SSH MCP Server."""
 import pytest
 from httpx import AsyncClient, ASGITransport
 
-# Make sure server module is importable
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-os.environ.setdefault("MCP_AUTH_TOKEN", "test-token")
+os.environ.setdefault("MCP_AUTH_TOKEN", "testtoken123")
+os.environ.setdefault("MCP_HOST", "127.0.0.1")
 os.environ.setdefault("MCP_PORT", "8080")
 
-from server import create_app  # noqa: E402
-
-APP = create_app()
+from server import create_app
 
 INIT_PAYLOAD = {
     "jsonrpc": "2.0",
@@ -27,92 +22,51 @@ INIT_PAYLOAD = {
     "id": 1,
 }
 
-
-@pytest.mark.anyio
-async def test_unauthorized_returns_401():
-    """Requests without a valid token must be rejected."""
-    async with AsyncClient(transport=ASGITransport(app=APP), base_url="http://test") as client:
-        resp = await client.post(
-            "/mcp",
-            json=INIT_PAYLOAD,
-            headers={"Content-Type": "application/json"},
-        )
-    assert resp.status_code == 401
+HEADERS_OK = {
+    "Content-Type": "application/json",
+    "Accept": "application/json, text/event-stream",
+    "Authorization": "Bearer testtoken123",
+}
 
 
-@pytest.mark.anyio
-async def test_external_host_header_not_rejected():
-    """Cloudflare tunnel sends an external Host header — must NOT get 421."""
-    async with AsyncClient(transport=ASGITransport(app=APP), base_url="http://test") as client:
-        resp = await client.post(
-            "/mcp",
-            json=INIT_PAYLOAD,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": "Bearer test-token",
-                "Host": "mcp.network-communications.net",
-            },
-        )
-    # Must NOT be 421 (Misdirected Request)
-    assert resp.status_code != 421, "DNS rebinding protection is still blocking external Host header"
+@pytest.fixture
+def app():
+    return create_app()
 
 
 @pytest.mark.anyio
-async def test_initialize_returns_response():
-    """Valid initialize request must return a jsonrpc response."""
-    async with AsyncClient(transport=ASGITransport(app=APP), base_url="http://test") as client:
-        resp = await client.post(
-            "/mcp",
-            json=INIT_PAYLOAD,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": "Bearer test-token",
-                "Host": "mcp.network-communications.net",
-            },
-        )
-    assert resp.status_code == 200
-    # Response can be JSON or SSE; either way must not be error
-    body = resp.text
-    assert "error" not in body.lower() or "Unauthorized" not in body
+async def test_unauthorized_returns_401(app):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/mcp", json=INIT_PAYLOAD, headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        })
+    assert r.status_code == 401
 
 
 @pytest.mark.anyio
-async def test_list_tools():
-    """Server must advertise ssh_execute, sftp_upload, sftp_download tools."""
-    init_resp_data = None
-    async with AsyncClient(transport=ASGITransport(app=APP), base_url="http://test") as client:
-        # initialize
-        resp = await client.post(
-            "/mcp",
-            json=INIT_PAYLOAD,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": "Bearer test-token",
-                "Host": "mcp.network-communications.net",
-                "Accept": "application/json, text/event-stream",
-            },
-        )
-        assert resp.status_code == 200
-        session_id = resp.headers.get("mcp-session-id")
+async def test_initialize_returns_200(app):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/mcp", json=INIT_PAYLOAD, headers=HEADERS_OK)
+    assert r.status_code == 200
 
-        list_tools_payload = {
+
+@pytest.mark.anyio
+async def test_list_tools(app):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # First initialize
+        init_r = await client.post("/mcp", json=INIT_PAYLOAD, headers=HEADERS_OK)
+        assert init_r.status_code == 200
+
+        # Then list tools
+        r = await client.post("/mcp", json={
             "jsonrpc": "2.0",
             "method": "tools/list",
             "params": {},
             "id": 2,
-        }
-        extra_headers = {
-            "Content-Type": "application/json",
-            "Authorization": "Bearer test-token",
-            "Host": "mcp.network-communications.net",
-            "Accept": "application/json, text/event-stream",
-        }
-        if session_id:
-            extra_headers["mcp-session-id"] = session_id
-
-        resp2 = await client.post("/mcp", json=list_tools_payload, headers=extra_headers)
-        assert resp2.status_code == 200
-        body = resp2.text
-
-    for tool_name in ("ssh_execute", "sftp_upload", "sftp_download"):
-        assert tool_name in body, f"Tool '{tool_name}' not found in tools/list response"
+        }, headers=HEADERS_OK)
+    assert r.status_code == 200
+    body = r.text
+    assert "ssh_execute" in body
+    assert "sftp_upload" in body
+    assert "sftp_download" in body

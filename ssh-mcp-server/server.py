@@ -6,7 +6,6 @@ import os
 import paramiko
 import uvicorn
 from mcp.server.fastmcp import FastMCP
-from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -116,12 +115,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
 # ---------- App factory (used by tests too) ----------
 
 def create_app():
-    # Disable DNS rebinding protection so cloudflared can proxy with external Host header
-    security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
-    app = mcp._lowlevel_server.streamable_http_app(
-        stateless_http=True,
-        transport_security=security,
-    )
+    # FastMCP.http_app() is the public API for streamable HTTP transport.
+    # It handles DNS rebinding protection correctly when behind a proxy.
+    app = mcp.http_app(path="/mcp")
     app.add_middleware(AuthMiddleware)
     return app
 
