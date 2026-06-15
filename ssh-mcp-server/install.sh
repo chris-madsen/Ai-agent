@@ -6,14 +6,19 @@ log()   { echo -e "${GREEN}[INFO]${NC}  $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 die()   { echo -e "${RED}[ERR]${NC}   $*"; exit 1; }
 
+# Note: intentionally no -f flag so curl always returns body even on 4xx/5xx
 cf_api() {
     local METHOD="$1"; local URL="$2"; shift 2
-    local RESP
-    RESP=$(curl -fsSL --fail-with-body -X "$METHOD" "https://api.cloudflare.com/client/v4$URL" \
+    local RESP HTTP_CODE
+    RESP=$(curl -sS -w '\n__HTTP_CODE__%{http_code}' \
+        -X "$METHOD" "https://api.cloudflare.com/client/v4${URL}" \
         -H "Authorization: Bearer ${CF_TOKEN}" \
         -H "Content-Type: application/json" "$@")
-    echo "$RESP" | jq -e '.success == true' >/dev/null \
-        || die "CF API error: $(echo "$RESP" | jq -r '.errors[0].message // .errors')"
+    HTTP_CODE=$(echo "$RESP" | grep '__HTTP_CODE__' | sed 's/__HTTP_CODE__//')
+    RESP=$(echo "$RESP" | grep -v '__HTTP_CODE__')
+    if ! echo "$RESP" | jq -e '.success == true' >/dev/null 2>&1; then
+        die "CF API ${METHOD} ${URL} failed (HTTP ${HTTP_CODE}): $(echo "$RESP" | jq -r '.errors[0].message // .errors // .message // empty' 2>/dev/null || echo "$RESP")"
+    fi
     echo "$RESP"
 }
 
@@ -43,7 +48,7 @@ if ! command -v cloudflared >/dev/null 2>&1; then
     log "Installing cloudflared..."
     ARCH=$(dpkg --print-architecture)
     CF_DEB_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}.deb"
-    HTTP_CODE=$(curl -fsSL -o /tmp/cloudflared.deb -w "%{http_code}" "$CF_DEB_URL")
+    HTTP_CODE=$(curl -sSL -o /tmp/cloudflared.deb -w "%{http_code}" "$CF_DEB_URL")
     [[ "$HTTP_CODE" == "200" ]] || die "Failed to download cloudflared (HTTP $HTTP_CODE): $CF_DEB_URL"
     dpkg -i /tmp/cloudflared.deb && rm -f /tmp/cloudflared.deb
 else
@@ -62,15 +67,18 @@ python3 -m venv "$INSTALL_DIR/.venv"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
 log "Fetching Cloudflare Zone ID for $ZONE_NAME..."
-ZONE_ID=$(cf_api GET "/zones?name=${ZONE_NAME}&status=active" | jq -r '.result[0].id // empty')
-[[ -n "$ZONE_ID" ]] || die "Zone not found: $ZONE_NAME"
+ZONE_RESP=$(cf_api GET "/zones?name=${ZONE_NAME}&status=active")
+ZONE_ID=$(echo "$ZONE_RESP" | jq -r '.result[0].id // empty')
+[[ -n "$ZONE_ID" ]] || die "Zone '$ZONE_NAME' not found. Check CF_TOKEN has Zone:Read permission for this zone."
+log "Zone ID: $ZONE_ID"
 
 log "Fetching Cloudflare Account ID..."
 ACCOUNT_ID=$(cf_api GET "/accounts" | jq -r '.result[0].id // empty')
-[[ -n "$ACCOUNT_ID" ]] || die "Could not get Account ID"
+[[ -n "$ACCOUNT_ID" ]] || die "Could not get Account ID. Check CF_TOKEN has Account:Read permission."
+log "Account ID: $ACCOUNT_ID"
 
 log "Setting up tunnel '$TUNNEL_NAME'..."
-EXISTING=$(curl -fsSL \
+EXISTING=$(curl -sS \
     "https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/cfd_tunnel?name=${TUNNEL_NAME}&is_deleted=false" \
     -H "Authorization: Bearer ${CF_TOKEN}" \
     -H "Content-Type: application/json")
@@ -97,7 +105,7 @@ chmod 600 "$CF_DIR/token"
 
 log "Configuring DNS for $CF_DOMAIN..."
 CNAME="${TUNNEL_ID}.cfargotunnel.com"
-DNS_RESP=$(curl -fsSL \
+DNS_RESP=$(curl -sS \
     "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?name=${CF_DOMAIN}&type=CNAME" \
     -H "Authorization: Bearer ${CF_TOKEN}" -H "Content-Type: application/json")
 DNS_ID=$(echo "$DNS_RESP" | jq -r '.result[0].id // empty')
