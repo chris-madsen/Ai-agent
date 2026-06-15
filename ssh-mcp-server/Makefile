@@ -9,3 +9,21 @@ uninstall:
 deploy:
 	git pull origin master
 	scp -i "openvpn-ee-ssh.pem" -r * ubuntu@ec2-3-222-67-107.compute-1.amazonaws.com:/home/ubuntu/ssh-mcp-server/
+
+test:
+	@echo "=== Unit tests (in-process ASGI) ==="
+	/opt/ssh-mcp-server/.venv/bin/pip install -q httpx pytest pytest-anyio anyio
+	MCP_AUTH_TOKEN=$$(cat /opt/ssh-mcp-server/.auth_token) \
+		PYTHONPATH=$(CURDIR) \
+		/opt/ssh-mcp-server/.venv/bin/pytest tests/ -v
+
+test-live:
+	@echo "=== Live integration tests ==="
+	@TOKEN=$$(cat /opt/ssh-mcp-server/.auth_token) bash tests/integration.sh $$TOKEN
+
+update:
+	git pull origin master
+	sudo cp server.py /opt/ssh-mcp-server/server.py
+	sudo /opt/ssh-mcp-server/.venv/bin/pip install -q -r requirements.txt
+	sudo systemctl restart ssh-mcp-server
+	sudo systemctl status ssh-mcp-server --no-pager
