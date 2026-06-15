@@ -2,12 +2,10 @@
 import json
 import logging
 import os
-from typing import Any
 
 import paramiko
 import uvicorn
 from mcp.server.fastmcp import FastMCP
-from mcp.server.streamable_http import StreamableHTTPServerTransport
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -20,13 +18,10 @@ AUTH_TOKEN = os.getenv("MCP_AUTH_TOKEN", "")
 HOST = os.getenv("MCP_HOST", "127.0.0.1")
 PORT = int(os.getenv("MCP_PORT", "8080"))
 
-mcp = FastMCP(
-    "ssh-mcp-server",
-    stateless_http=True,
-)
+mcp = FastMCP("ssh-mcp-server")
 
 
-# --- SSH/SFTP helpers ---
+# ---------- SSH/SFTP helpers ----------
 
 def _connect(host, port, username, key_path):
     client = paramiko.SSHClient()
@@ -36,7 +31,7 @@ def _connect(host, port, username, key_path):
     return client
 
 
-# --- MCP Tools ---
+# ---------- MCP Tools ----------
 
 @mcp.tool()
 def ssh_execute(
@@ -109,7 +104,7 @@ def sftp_download(
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
-# --- Auth middleware ---
+# ---------- Auth middleware ----------
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -118,10 +113,22 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-# --- Entry point ---
+# ---------- App factory (used by tests too) ----------
+
+def create_app():
+    # Disable DNS rebinding protection so cloudflared can proxy with external Host header
+    security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    app = mcp._lowlevel_server.streamable_http_app(
+        stateless_http=True,
+        transport_security=security,
+    )
+    app.add_middleware(AuthMiddleware)
+    return app
+
+
+# ---------- Entry point ----------
 
 if __name__ == "__main__":
     logger.info(f"Starting SSH MCP Server on {HOST}:{PORT}/mcp")
-    app = mcp.streamable_http_app()
-    app.add_middleware(AuthMiddleware)
+    app = create_app()
     uvicorn.run(app, host=HOST, port=PORT)
