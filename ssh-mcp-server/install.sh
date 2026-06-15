@@ -6,7 +6,6 @@ log()   { echo -e "${GREEN}[INFO]${NC}  $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 die()   { echo -e "${RED}[ERR]${NC}   $*"; exit 1; }
 
-# curl without -f so we always get the response body even on 4xx/5xx
 cf_api() {
     local METHOD="$1"; local URL="$2"; shift 2
     local RESP HTTP_CODE
@@ -49,7 +48,7 @@ if ! command -v cloudflared >/dev/null 2>&1; then
     ARCH=$(dpkg --print-architecture)
     CF_DEB_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}.deb"
     HTTP_CODE=$(curl -sSL -o /tmp/cloudflared.deb -w "%{http_code}" "$CF_DEB_URL")
-    [[ "$HTTP_CODE" == "200" ]] || die "Failed to download cloudflared (HTTP $HTTP_CODE): $CF_DEB_URL"
+    [[ "$HTTP_CODE" == "200" ]] || die "Failed to download cloudflared (HTTP $HTTP_CODE)"
     dpkg -i /tmp/cloudflared.deb && rm -f /tmp/cloudflared.deb
 else
     log "cloudflared already installed: $(cloudflared --version)"
@@ -66,13 +65,25 @@ python3 -m venv "$INSTALL_DIR/.venv"
 "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" -q
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
+# Generate auth token once, reuse on reinstall
+AUTH_TOKEN_FILE="$INSTALL_DIR/.auth_token"
+if [[ -f "$AUTH_TOKEN_FILE" ]]; then
+    MCP_AUTH_TOKEN=$(cat "$AUTH_TOKEN_FILE")
+    log "Reusing existing auth token."
+else
+    MCP_AUTH_TOKEN=$(openssl rand -hex 32)
+    echo "$MCP_AUTH_TOKEN" > "$AUTH_TOKEN_FILE"
+    chmod 600 "$AUTH_TOKEN_FILE"
+    chown "$SERVICE_USER:$SERVICE_USER" "$AUTH_TOKEN_FILE"
+    log "Generated new auth token."
+fi
+
 log "Fetching Cloudflare Zone ID for $ZONE_NAME..."
 ZONE_RESP=$(cf_api GET "/zones?name=${ZONE_NAME}&status=active")
 ZONE_ID=$(echo "$ZONE_RESP" | jq -r '.result[0].id // empty')
-[[ -n "$ZONE_ID" ]] || die "Zone '$ZONE_NAME' not found. Is it added to Cloudflare and the token has Zone:Read?"
+[[ -n "$ZONE_ID" ]] || die "Zone '$ZONE_NAME' not found. Check CF_TOKEN has Zone:Read permission."
 log "Zone ID: $ZONE_ID"
 
-# Account ID — extracted from Zone's account field, no extra permissions needed
 ACCOUNT_ID=$(echo "$ZONE_RESP" | jq -r '.result[0].account.id // empty')
 [[ -n "$ACCOUNT_ID" ]] || die "Could not extract Account ID from zone response"
 log "Account ID: $ACCOUNT_ID"
@@ -94,8 +105,7 @@ if [[ -z "$TUNNEL_ID" ]]; then
 else
     warn "Tunnel '$TUNNEL_NAME' already exists (ID: $TUNNEL_ID), reusing."
     if [[ -z "$TUNNEL_TOKEN" ]]; then
-        TUNNEL_TOKEN=$(cf_api GET "/accounts/${ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/token" \
-            | jq -r '.result')
+        TUNNEL_TOKEN=$(cf_api GET "/accounts/${ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/token" | jq -r '.result')
     fi
 fi
 [[ -n "$TUNNEL_TOKEN" ]] || die "Could not obtain tunnel token"
@@ -120,7 +130,7 @@ else
 fi
 
 log "Installing systemd units..."
-sed "s|__MCP_PORT__|${MCP_PORT}|g; s|__INSTALL_DIR__|${INSTALL_DIR}|g; s|__SERVICE_USER__|${SERVICE_USER}|g" \
+sed "s|__MCP_PORT__|${MCP_PORT}|g; s|__INSTALL_DIR__|${INSTALL_DIR}|g; s|__SERVICE_USER__|${SERVICE_USER}|g; s|__MCP_AUTH_TOKEN__|${MCP_AUTH_TOKEN}|g" \
     ssh-mcp-server.service > /etc/systemd/system/ssh-mcp-server.service
 install -m644 cloudflared.slice   /etc/systemd/system/cloudflared.slice
 install -m644 cloudflared.service /etc/systemd/system/cloudflared.service
@@ -130,5 +140,7 @@ systemctl enable --now ssh-mcp-server.service
 systemctl enable --now cloudflared.service
 
 echo ""
-echo -e "${GREEN}Done! Add this URL to Perplexity connectors:${NC}"
-echo -e "  ${YELLOW}https://${CF_DOMAIN}/sse${NC}"
+echo -e "${GREEN}=== Done! ===${NC}"
+echo -e "  Transport: Streamable HTTP"
+echo -e "  URL:       ${YELLOW}https://${CF_DOMAIN}/mcp${NC}"
+echo -e "  Token:     ${YELLOW}${MCP_AUTH_TOKEN}${NC}"

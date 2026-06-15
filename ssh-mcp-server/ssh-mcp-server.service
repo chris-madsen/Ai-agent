@@ -9,6 +9,7 @@ Group=__SERVICE_USER__
 WorkingDirectory=__INSTALL_DIR__
 Environment=MCP_HOST=127.0.0.1
 Environment=MCP_PORT=__MCP_PORT__
+Environment=MCP_AUTH_TOKEN=__MCP_AUTH_TOKEN__
 ExecStart=__INSTALL_DIR__/.venv/bin/python __INSTALL_DIR__/server.py
 Restart=always
 RestartSec=5s

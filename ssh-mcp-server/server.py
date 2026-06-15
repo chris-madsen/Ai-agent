@@ -3,15 +3,19 @@ import json, logging, os
 from typing import Any
 import paramiko
 from mcp.server import Server
+from mcp.server.streamable_http import StreamableHTTPServerTransport
 from mcp.types import Tool, TextContent
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.routing import Route, Mount
-from mcp.server.sse import SseServerTransport
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 import uvicorn
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+AUTH_TOKEN = os.getenv("MCP_AUTH_TOKEN", "")
+
 app = Server("ssh-mcp-server")
 
 def _connect(host, port, username, key_path):
@@ -67,23 +71,38 @@ async def list_tools() -> list[Tool]:
 @app.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     try:
-        if name == "ssh_execute": result = ssh_execute(arguments["host"], arguments.get("port",22), arguments["username"], arguments["private_key_path"], arguments["command"], arguments.get("timeout",30))
-        elif name == "sftp_upload": result = sftp_upload(arguments["host"], arguments.get("port",22), arguments["username"], arguments["private_key_path"], arguments["local_path"], arguments["remote_path"])
-        elif name == "sftp_download": result = sftp_download(arguments["host"], arguments.get("port",22), arguments["username"], arguments["private_key_path"], arguments["remote_path"], arguments["local_path"])
-        else: result = {"error": f"Unknown tool: {name}"}
+        if name == "ssh_execute":
+            result = ssh_execute(arguments["host"], arguments.get("port",22), arguments["username"], arguments["private_key_path"], arguments["command"], arguments.get("timeout",30))
+        elif name == "sftp_upload":
+            result = sftp_upload(arguments["host"], arguments.get("port",22), arguments["username"], arguments["private_key_path"], arguments["local_path"], arguments["remote_path"])
+        elif name == "sftp_download":
+            result = sftp_download(arguments["host"], arguments.get("port",22), arguments["username"], arguments["private_key_path"], arguments["remote_path"], arguments["local_path"])
+        else:
+            result = {"error": f"Unknown tool: {name}"}
     except Exception as e:
         result = {"error": str(e)}
     return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
 
-def create_starlette_app(mcp_server: Server) -> Starlette:
-    sse = SseServerTransport("/messages/")
-    async def handle_sse(request: Request):
-        async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
-            await mcp_server.run(streams[0], streams[1], mcp_server.create_initialization_options())
-    return Starlette(routes=[Route("/sse", endpoint=handle_sse), Mount("/messages/", app=sse.handle_post_message)])
+def check_auth(request: Request) -> bool:
+    if not AUTH_TOKEN:
+        return True
+    auth = request.headers.get("Authorization", "")
+    return auth == f"Bearer {AUTH_TOKEN}"
+
+def create_app(mcp_server: Server) -> Starlette:
+    transport = StreamableHTTPServerTransport(mcp_path="/mcp")
+
+    async def handle_mcp(request: Request):
+        if not check_auth(request):
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        async with transport.connect_http(request) as session:
+            await mcp_server.run(session.read_stream, session.write_stream,
+                                 mcp_server.create_initialization_options())
+
+    return Starlette(routes=[Route("/mcp", endpoint=handle_mcp, methods=["GET", "POST"])])
 
 if __name__ == "__main__":
     host = os.getenv("MCP_HOST", "127.0.0.1")
     port = int(os.getenv("MCP_PORT", "8080"))
-    logger.info(f"Starting SSH MCP Server on {host}:{port}")
-    uvicorn.run(create_starlette_app(app), host=host, port=port)
+    logger.info(f"Starting SSH MCP Server on {host}:{port}/mcp")
+    uvicorn.run(create_app(app), host=host, port=port)
