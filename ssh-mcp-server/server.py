@@ -56,9 +56,12 @@ def sftp_download(host, port, username, private_key_path, remote_path, local_pat
 @app.list_tools()
 async def list_tools() -> list[Tool]:
     return [
-        Tool(name="ssh_execute", description="Execute a shell command on a remote server via SSH", inputSchema={"type":"object","properties":{"host":{"type":"string"},"port":{"type":"integer","default":22},"username":{"type":"string"},"private_key_path":{"type":"string"},"command":{"type":"string"},"timeout":{"type":"integer","default":30}},"required":["host","username","private_key_path","command"]}),
-        Tool(name="sftp_upload", description="Upload a local file to a remote server via SFTP", inputSchema={"type":"object","properties":{"host":{"type":"string"},"port":{"type":"integer","default":22},"username":{"type":"string"},"private_key_path":{"type":"string"},"local_path":{"type":"string"},"remote_path":{"type":"string"}},"required":["host","username","private_key_path","local_path","remote_path"]}),
-        Tool(name="sftp_download", description="Download a file from a remote server via SFTP", inputSchema={"type":"object","properties":{"host":{"type":"string"},"port":{"type":"integer","default":22},"username":{"type":"string"},"private_key_path":{"type":"string"},"remote_path":{"type":"string"},"local_path":{"type":"string"}},"required":["host","username","private_key_path","remote_path","local_path"]}),
+        Tool(name="ssh_execute", description="Execute a shell command on a remote server via SSH",
+             inputSchema={"type":"object","properties":{"host":{"type":"string"},"port":{"type":"integer","default":22},"username":{"type":"string"},"private_key_path":{"type":"string"},"command":{"type":"string"},"timeout":{"type":"integer","default":30}},"required":["host","username","private_key_path","command"]}),
+        Tool(name="sftp_upload", description="Upload a local file to a remote server via SFTP",
+             inputSchema={"type":"object","properties":{"host":{"type":"string"},"port":{"type":"integer","default":22},"username":{"type":"string"},"private_key_path":{"type":"string"},"local_path":{"type":"string"},"remote_path":{"type":"string"}},"required":["host","username","private_key_path","local_path","remote_path"]}),
+        Tool(name="sftp_download", description="Download a file from a remote server via SFTP",
+             inputSchema={"type":"object","properties":{"host":{"type":"string"},"port":{"type":"integer","default":22},"username":{"type":"string"},"private_key_path":{"type":"string"},"remote_path":{"type":"string"},"local_path":{"type":"string"}},"required":["host","username","private_key_path","remote_path","local_path"]}),
     ]
 
 @app.call_tool()

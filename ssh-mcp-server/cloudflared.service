@@ -9,6 +9,8 @@ Slice=cloudflared.slice
 ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate run --token-file /etc/cloudflared/token
 Restart=always
 RestartSec=10s
+StartLimitBurst=5
+StartLimitIntervalSec=60
 LimitNOFILE=4096
 
 [Install]
