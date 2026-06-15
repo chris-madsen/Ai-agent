@@ -1,15 +1,16 @@
-"""Tests for SSH MCP Server — uses Starlette TestClient (handles lifespan)."""
+"""Tests for SSH MCP Server."""
 import os
 import sys
 
-import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-os.environ.setdefault("MCP_AUTH_TOKEN", "testtoken123")
+# Force a known test token so tests are self-contained and repeatable,
+# regardless of what MCP_AUTH_TOKEN is set to in the environment.
+os.environ["MCP_AUTH_TOKEN"] = "testtoken123"
 os.environ.setdefault("MCP_HOST", "127.0.0.1")
 os.environ.setdefault("MCP_PORT", "8080")
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+import pytest
 from starlette.testclient import TestClient
 
 from server import create_app
