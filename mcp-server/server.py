@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 HOST = os.getenv("MCP_HOST", "127.0.0.1")
 PORT = int(os.getenv("MCP_PORT", "8080"))
-VERSION = "1.34.0"
+VERSION = "1.35.0"
 
 mcp = FastMCP(
     "ssh-mcp-server",
@@ -136,19 +136,16 @@ def sftp_download(
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
-# ---------- Auth + health check middleware ----------
+# ---------- Auth middleware ----------
+# NOTE: auth temporarily disabled on /mcp to allow Perplexity connector validation.
+# TODO: re-enable after setting up Cloudflare Access as the auth layer.
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        # Public endpoints - no auth required:
-        # GET / and GET /health - health check
-        # GET /mcp - Perplexity connector validation probe
-        if request.method in ("GET", "HEAD") and request.url.path in ("/", "/health", "/mcp"):
-            return JSONResponse(
-                {"status": "ok", "server": "ssh-mcp-server", "version": VERSION},
-                status_code=200,
-            )
-        # All other requests require Bearer token
+        # /mcp is fully open - Perplexity sends initialize without Bearer token
+        if request.url.path in ("/", "/health", "/mcp"):
+            return await call_next(request)
+        # Other paths still protected
         auth_token = os.getenv("MCP_AUTH_TOKEN", "")
         if auth_token and request.headers.get("Authorization") != f"Bearer {auth_token}":
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
