@@ -110,6 +110,7 @@ EXISTING=$(curl -sS \
     -H "Content-Type: application/json")
 TUNNEL_ID=$(echo "$EXISTING" | jq -r '.result[0].id // empty')
 TUNNEL_TOKEN=$(echo "$EXISTING" | jq -r '.result[0].token // empty')
+TUNNEL_IS_NEW=false
 
 if [[ -z "$TUNNEL_ID" ]]; then
     log "Creating new tunnel..."
@@ -117,8 +118,11 @@ if [[ -z "$TUNNEL_ID" ]]; then
         --data "{\"name\":\"${TUNNEL_NAME}\",\"tunnel_secret\":\"$(openssl rand -base64 32)\"}")
     TUNNEL_ID=$(echo "$CREATE" | jq -r '.result.id')
     TUNNEL_TOKEN=$(echo "$CREATE" | jq -r '.result.token')
+    TUNNEL_IS_NEW=true
 else
     warn "Tunnel '$TUNNEL_NAME' already exists (ID: $TUNNEL_ID), reusing."
+    warn "Skipping ingress reconfiguration to avoid overwriting other installations sharing this tunnel."
+    warn "To force ingress update, delete the tunnel first or set FORCE_INGRESS=1."
     if [[ -z "$TUNNEL_TOKEN" ]]; then
         TUNNEL_TOKEN=$(cf_api GET "/accounts/${ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/token" | jq -r '.result')
     fi
@@ -128,22 +132,26 @@ fi
 echo "$TUNNEL_TOKEN" > "$CF_DIR/token"
 chmod 600 "$CF_DIR/token"
 
-# --- Configure ingress rules via Cloudflare API ---
-log "Configuring tunnel ingress rules for $CF_DOMAIN -> localhost:$MCP_PORT ..."
-INGRESS_PAYLOAD=$(jq -n \
-    --arg hostname "$CF_DOMAIN" \
-    --arg service "http://localhost:$MCP_PORT" \
-    '{
-        config: {
-            ingress: [
-                { hostname: $hostname, service: $service },
-                { service: "http_status:404" }
-            ]
-        }
-    }')
-cf_api PUT "/accounts/${ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations" \
-    --data "$INGRESS_PAYLOAD" >/dev/null
-log "Ingress rules configured."
+# Configure ingress only for new tunnels OR when explicitly forced
+if [[ "$TUNNEL_IS_NEW" == true ]] || [[ "${FORCE_INGRESS:-0}" == "1" ]]; then
+    log "Configuring tunnel ingress rules for $CF_DOMAIN -> localhost:$MCP_PORT ..."
+    INGRESS_PAYLOAD=$(jq -n \
+        --arg hostname "$CF_DOMAIN" \
+        --arg service "http://localhost:$MCP_PORT" \
+        '{
+            config: {
+                ingress: [
+                    { hostname: $hostname, service: $service },
+                    { service: "http_status:404" }
+                ]
+            }
+        }')
+    cf_api PUT "/accounts/${ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations" \
+        --data "$INGRESS_PAYLOAD" >/dev/null
+    log "Ingress rules configured."
+else
+    log "Ingress rules left unchanged (tunnel already existed)."
+fi
 
 log "Configuring DNS for $CF_DOMAIN..."
 CNAME="${TUNNEL_ID}.cfargotunnel.com"
