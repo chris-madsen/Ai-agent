@@ -24,10 +24,11 @@ cf_api() {
 : "${CF_TOKEN:?CF_TOKEN required}"
 : "${CF_DOMAIN:?CF_DOMAIN required}"
 MCP_PORT="${MCP_PORT:-8080}"
+# TUNNEL_NAME can be overridden per-installation to avoid conflicts between machines
+TUNNEL_NAME="${TUNNEL_NAME:-ssh-mcp-tunnel}"
 INSTALL_DIR="/opt/ssh-mcp-server"
 SERVICE_USER="mcpserver"
 CF_DIR="/etc/cloudflared"
-TUNNEL_NAME="ssh-mcp-tunnel"
 TOKEN_BACKUP="/etc/mcp-server-token"
 SUDOERS_FILE="/etc/sudoers.d/mcpserver"
 
@@ -37,9 +38,10 @@ IFS='.' read -ra PARTS <<< "$CF_DOMAIN"
 (( ${#PARTS[@]} >= 3 )) || die "CF_DOMAIN must be a full hostname like mcp.example.com (got: $CF_DOMAIN)"
 ZONE_NAME="${CF_DOMAIN#*.}"
 
-log "Hostname : $CF_DOMAIN"
-log "Zone     : $ZONE_NAME"
-log "Port     : $MCP_PORT"
+log "Hostname    : $CF_DOMAIN"
+log "Zone        : $ZONE_NAME"
+log "Port        : $MCP_PORT"
+log "Tunnel name : $TUNNEL_NAME"
 
 log "Installing packages..."
 apt-get update -qq
@@ -113,7 +115,7 @@ TUNNEL_TOKEN=$(echo "$EXISTING" | jq -r '.result[0].token // empty')
 TUNNEL_IS_NEW=false
 
 if [[ -z "$TUNNEL_ID" ]]; then
-    log "Creating new tunnel..."
+    log "Creating new tunnel '$TUNNEL_NAME'..."
     CREATE=$(cf_api POST "/accounts/${ACCOUNT_ID}/cfd_tunnel" \
         --data "{\"name\":\"${TUNNEL_NAME}\",\"tunnel_secret\":\"$(openssl rand -base64 32)\"}")
     TUNNEL_ID=$(echo "$CREATE" | jq -r '.result.id')
@@ -131,6 +133,11 @@ fi
 
 echo "$TUNNEL_TOKEN" > "$CF_DIR/token"
 chmod 600 "$CF_DIR/token"
+
+# Save tunnel name and ID so uninstall.sh knows which tunnel to delete
+echo "$TUNNEL_NAME" > "$CF_DIR/tunnel_name"
+echo "$TUNNEL_ID"   > "$CF_DIR/tunnel_id"
+echo "$ACCOUNT_ID"  > "$CF_DIR/account_id"
 
 # Configure ingress only for new tunnels OR when explicitly forced
 if [[ "$TUNNEL_IS_NEW" == true ]] || [[ "${FORCE_INGRESS:-0}" == "1" ]]; then
@@ -181,6 +188,7 @@ systemctl enable --now cloudflared.service
 
 echo ""
 echo -e "${GREEN}=== Done! ===${NC}"
-echo -e "  Transport: Streamable HTTP"
-echo -e "  URL:       ${YELLOW}https://${CF_DOMAIN}/mcp${NC}"
-echo -e "  Token:     ${YELLOW}${MCP_AUTH_TOKEN}${NC}"
+echo -e "  Transport : Streamable HTTP"
+echo -e "  URL       : ${YELLOW}https://${CF_DOMAIN}/mcp${NC}"
+echo -e "  Token     : ${YELLOW}${MCP_AUTH_TOKEN}${NC}"
+echo -e "  Tunnel    : ${YELLOW}${TUNNEL_NAME} (${TUNNEL_ID})${NC}"
