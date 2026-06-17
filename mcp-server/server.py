@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 HOST = os.getenv("MCP_HOST", "127.0.0.1")
 PORT = int(os.getenv("MCP_PORT", "8080"))
-VERSION = "1.33.0"
+VERSION = "1.34.0"
 
 mcp = FastMCP(
     "ssh-mcp-server",
@@ -140,13 +140,15 @@ def sftp_download(
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        # Public health check - no auth required, short-circuit immediately
-        if request.method in ("GET", "HEAD") and request.url.path in ("/", "/health"):
+        # Public endpoints - no auth required:
+        # GET / and GET /health - health check
+        # GET /mcp - Perplexity connector validation probe
+        if request.method in ("GET", "HEAD") and request.url.path in ("/", "/health", "/mcp"):
             return JSONResponse(
                 {"status": "ok", "server": "ssh-mcp-server", "version": VERSION},
                 status_code=200,
             )
-        # All other routes require Bearer token
+        # All other requests require Bearer token
         auth_token = os.getenv("MCP_AUTH_TOKEN", "")
         if auth_token and request.headers.get("Authorization") != f"Bearer {auth_token}":
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
