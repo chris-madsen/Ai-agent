@@ -4,21 +4,24 @@ set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 log()   { echo -e "${GREEN}[INFO]${NC}  $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
-die()   { echo -e "${RED}[ERR]${NC}   $*"; exit 1; }
+die()   { echo -e "${RED}[ERR]${NC}   $*" >&2; exit 1; }
 
 cf_api() {
     local METHOD="$1"; local URL="$2"; shift 2
-    local RESP HTTP_CODE
+    local RESP HTTP_CODE BODY
     RESP=$(curl -sS -w '\n__HTTP_CODE__%{http_code}' \
         -X "$METHOD" "https://api.cloudflare.com/client/v4${URL}" \
         -H "Authorization: Bearer ${CF_TOKEN}" \
         -H "Content-Type: application/json" "$@")
     HTTP_CODE=$(echo "$RESP" | grep '__HTTP_CODE__' | sed 's/__HTTP_CODE__//')
-    RESP=$(echo "$RESP" | grep -v '__HTTP_CODE__')
-    if ! echo "$RESP" | jq -e '.success == true' >/dev/null 2>&1; then
-        die "CF API ${METHOD} ${URL} failed (HTTP ${HTTP_CODE}): $(echo "$RESP" | jq -r '.errors[0].message // .errors // empty' 2>/dev/null || echo "$RESP")"
+    BODY=$(echo "$RESP" | grep -v '__HTTP_CODE__')
+    if ! echo "$BODY" | jq -e '.success == true' >/dev/null 2>&1; then
+        echo -e "${RED}[CF API ERROR]${NC} ${METHOD} ${URL} — HTTP ${HTTP_CODE}" >&2
+        echo -e "${RED}Full response:${NC}" >&2
+        echo "$BODY" | jq . >&2 2>/dev/null || echo "$BODY" >&2
+        exit 1
     fi
-    echo "$RESP"
+    echo "$BODY"
 }
 
 : "${CF_TOKEN:?CF_TOKEN required}"
@@ -46,14 +49,13 @@ log "Tunnel name : $TUNNEL_NAME"
 log "Stopping existing services (if any)..."
 systemctl stop ssh-mcp-server.service 2>/dev/null || true
 systemctl stop cloudflared.service    2>/dev/null || true
-# Wait until the port is actually free
 for i in $(seq 1 10); do
     ss -tlnp | grep -q ":${MCP_PORT} " || break
     warn "Port ${MCP_PORT} still in use, waiting... (${i}/10)"
     sleep 1
 done
 if ss -tlnp | grep -q ":${MCP_PORT} "; then
-    die "Port ${MCP_PORT} is still occupied after stopping services. Free it manually."
+    die "Port ${MCP_PORT} is still occupied after stopping services. Free it manually: sudo fuser -k ${MCP_PORT}/tcp"
 fi
 
 log "Installing packages..."
@@ -82,8 +84,9 @@ log "Installing MCP server..."
 mkdir -p "$INSTALL_DIR" "$CF_DIR"
 cp server.py requirements.txt "$INSTALL_DIR/"
 python3 -m venv "$INSTALL_DIR/.venv"
-"$INSTALL_DIR/.venv/bin/pip" install --upgrade pip -q
-"$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" -q
+# Use --cache-dir under INSTALL_DIR to avoid home-dir permission warnings
+"$INSTALL_DIR/.venv/bin/pip" install --upgrade pip --cache-dir "$INSTALL_DIR/.pip-cache" -q
+"$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" --cache-dir "$INSTALL_DIR/.pip-cache" -q
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
 AUTH_TOKEN_FILE="$INSTALL_DIR/.auth_token"
@@ -108,7 +111,7 @@ fi
 log "Fetching Cloudflare Zone ID for $ZONE_NAME..."
 ZONE_RESP=$(cf_api GET "/zones?name=${ZONE_NAME}&status=active")
 ZONE_ID=$(echo "$ZONE_RESP" | jq -r '.result[0].id // empty')
-[[ -n "$ZONE_ID" ]] || die "Zone '$ZONE_NAME' not found. Check CF_TOKEN has Zone:Read permission."
+[[ -n "$ZONE_ID" ]] || die "Zone '$ZONE_NAME' not found or CF_TOKEN lacks Zone:Read permission."
 log "Zone ID: $ZONE_ID"
 
 ACCOUNT_ID=$(echo "$ZONE_RESP" | jq -r '.result[0].account.id // empty')
@@ -133,7 +136,7 @@ if [[ -z "$TUNNEL_ID" ]]; then
     TUNNEL_IS_NEW=true
 else
     warn "Tunnel '$TUNNEL_NAME' already exists (ID: $TUNNEL_ID), reusing."
-    warn "Skipping ingress reconfiguration to avoid overwriting other installations sharing this tunnel."
+    warn "Skipping ingress reconfiguration to avoid overwriting other installations."
     warn "To force ingress update, set FORCE_INGRESS=1."
     if [[ -z "$TUNNEL_TOKEN" ]]; then
         TUNNEL_TOKEN=$(cf_api GET "/accounts/${ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/token" | jq -r '.result')
@@ -143,7 +146,6 @@ fi
 
 echo "$TUNNEL_TOKEN" > "$CF_DIR/token"
 chmod 600 "$CF_DIR/token"
-
 echo "$TUNNEL_NAME" > "$CF_DIR/tunnel_name"
 echo "$TUNNEL_ID"   > "$CF_DIR/tunnel_id"
 echo "$ACCOUNT_ID"  > "$CF_DIR/account_id"
@@ -188,9 +190,8 @@ log "Installing systemd units..."
 sed "s|__MCP_PORT__|${MCP_PORT}|g; s|__INSTALL_DIR__|${INSTALL_DIR}|g; s|__SERVICE_USER__|${SERVICE_USER}|g; s|__MCP_AUTH_TOKEN__|${MCP_AUTH_TOKEN}|g" \
     ssh-mcp-server.service > /etc/systemd/system/ssh-mcp-server.service
 
-# Sanity check: verify the substitution actually worked
 grep -q "MCP_PORT=${MCP_PORT}" /etc/systemd/system/ssh-mcp-server.service \
-    || die "Unit file sanity check failed: MCP_PORT=${MCP_PORT} not found in installed unit. Check ssh-mcp-server.service template."
+    || die "Unit file sanity check failed: MCP_PORT=${MCP_PORT} not found in installed unit."
 
 install -m644 cloudflared.slice   /etc/systemd/system/cloudflared.slice
 install -m644 cloudflared.service /etc/systemd/system/cloudflared.service
@@ -199,12 +200,11 @@ systemctl daemon-reload
 systemctl enable --now ssh-mcp-server.service
 systemctl enable --now cloudflared.service
 
-# Verify the service actually started on the right port
 sleep 2
 if ss -tlnp | grep -q ":${MCP_PORT} "; then
     log "Service is listening on port ${MCP_PORT}. "
 else
-    warn "Service does not appear to be listening on port ${MCP_PORT} yet. Check: journalctl -u ssh-mcp-server.service"
+    warn "Service not yet on port ${MCP_PORT}. Check: journalctl -u ssh-mcp-server.service"
 fi
 
 echo ""
