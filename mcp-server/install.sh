@@ -17,7 +17,6 @@ cf_api() {
     BODY=$(echo "$RESP" | grep -v '__HTTP_CODE__')
     if ! echo "$BODY" | jq -e '.success == true' >/dev/null 2>&1; then
         echo -e "${RED}[CF API ERROR]${NC} ${METHOD} ${URL} — HTTP ${HTTP_CODE}" >&2
-        echo -e "${RED}Full response:${NC}" >&2
         echo "$BODY" | jq . >&2 2>/dev/null || echo "$BODY" >&2
         exit 1
     fi
@@ -33,6 +32,7 @@ SERVICE_USER="mcpserver"
 CF_DIR="/etc/cloudflared"
 TOKEN_BACKUP="/etc/mcp-server-token"
 SUDOERS_FILE="/etc/sudoers.d/mcpserver"
+ENV_FILE="$INSTALL_DIR/env"
 
 [[ $EUID -ne 0 ]] && die "Run as root: sudo -E bash install.sh"
 
@@ -45,7 +45,6 @@ log "Zone        : $ZONE_NAME"
 log "Port        : $MCP_PORT"
 log "Tunnel name : $TUNNEL_NAME"
 
-# Stop any running instance BEFORE touching files so the port is freed
 log "Stopping existing services (if any)..."
 systemctl stop ssh-mcp-server.service 2>/dev/null || true
 systemctl stop cloudflared.service    2>/dev/null || true
@@ -55,7 +54,7 @@ for i in $(seq 1 10); do
     sleep 1
 done
 if ss -tlnp | grep -q ":${MCP_PORT} "; then
-    die "Port ${MCP_PORT} is still occupied after stopping services. Free it manually: sudo fuser -k ${MCP_PORT}/tcp"
+    die "Port ${MCP_PORT} still occupied. Free it: sudo fuser -k ${MCP_PORT}/tcp"
 fi
 
 log "Installing packages..."
@@ -84,17 +83,14 @@ log "Installing MCP server..."
 mkdir -p "$INSTALL_DIR" "$CF_DIR"
 cp server.py requirements.txt "$INSTALL_DIR/"
 python3 -m venv "$INSTALL_DIR/.venv"
-# Use --cache-dir under INSTALL_DIR to avoid home-dir permission warnings
 "$INSTALL_DIR/.venv/bin/pip" install --upgrade pip --cache-dir "$INSTALL_DIR/.pip-cache" -q
 "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" --cache-dir "$INSTALL_DIR/.pip-cache" -q
-chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
 AUTH_TOKEN_FILE="$INSTALL_DIR/.auth_token"
 if [[ -f "$TOKEN_BACKUP" ]]; then
     MCP_AUTH_TOKEN=$(cat "$TOKEN_BACKUP")
     cp "$TOKEN_BACKUP" "$AUTH_TOKEN_FILE"
     chmod 600 "$AUTH_TOKEN_FILE"
-    chown "$SERVICE_USER:$SERVICE_USER" "$AUTH_TOKEN_FILE"
     rm -f "$TOKEN_BACKUP"
     log "Restored auth token from backup."
 elif [[ -f "$AUTH_TOKEN_FILE" ]]; then
@@ -104,9 +100,18 @@ else
     MCP_AUTH_TOKEN=$(openssl rand -hex 32)
     echo "$MCP_AUTH_TOKEN" > "$AUTH_TOKEN_FILE"
     chmod 600 "$AUTH_TOKEN_FILE"
-    chown "$SERVICE_USER:$SERVICE_USER" "$AUTH_TOKEN_FILE"
     log "Generated new auth token."
 fi
+
+# Write env file — this is what systemd actually reads, no sed magic
+cat > "$ENV_FILE" <<EOF
+MCP_HOST=127.0.0.1
+MCP_PORT=${MCP_PORT}
+MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN}
+EOF
+chmod 600 "$ENV_FILE"
+chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
+log "Env file written: MCP_PORT=${MCP_PORT}"
 
 log "Fetching Cloudflare Zone ID for $ZONE_NAME..."
 ZONE_RESP=$(cf_api GET "/zones?name=${ZONE_NAME}&status=active")
@@ -136,8 +141,7 @@ if [[ -z "$TUNNEL_ID" ]]; then
     TUNNEL_IS_NEW=true
 else
     warn "Tunnel '$TUNNEL_NAME' already exists (ID: $TUNNEL_ID), reusing."
-    warn "Skipping ingress reconfiguration to avoid overwriting other installations."
-    warn "To force ingress update, set FORCE_INGRESS=1."
+    warn "Skipping ingress reconfiguration. To force: FORCE_INGRESS=1."
     if [[ -z "$TUNNEL_TOKEN" ]]; then
         TUNNEL_TOKEN=$(cf_api GET "/accounts/${ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/token" | jq -r '.result')
     fi
@@ -151,23 +155,16 @@ echo "$TUNNEL_ID"   > "$CF_DIR/tunnel_id"
 echo "$ACCOUNT_ID"  > "$CF_DIR/account_id"
 
 if [[ "$TUNNEL_IS_NEW" == true ]] || [[ "${FORCE_INGRESS:-0}" == "1" ]]; then
-    log "Configuring tunnel ingress rules for $CF_DOMAIN -> localhost:$MCP_PORT ..."
+    log "Configuring tunnel ingress for $CF_DOMAIN -> localhost:$MCP_PORT ..."
     INGRESS_PAYLOAD=$(jq -n \
         --arg hostname "$CF_DOMAIN" \
         --arg service "http://localhost:$MCP_PORT" \
-        '{
-            config: {
-                ingress: [
-                    { hostname: $hostname, service: $service },
-                    { service: "http_status:404" }
-                ]
-            }
-        }')
+        '{config:{ingress:[{hostname:$hostname,service:$service},{service:"http_status:404"}]}}')
     cf_api PUT "/accounts/${ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations" \
         --data "$INGRESS_PAYLOAD" >/dev/null
-    log "Ingress rules configured."
+    log "Ingress configured."
 else
-    log "Ingress rules left unchanged (tunnel already existed)."
+    log "Ingress left unchanged (tunnel already existed)."
 fi
 
 log "Configuring DNS for $CF_DOMAIN..."
@@ -177,7 +174,6 @@ DNS_RESP=$(curl -sS \
     -H "Authorization: Bearer ${CF_TOKEN}" -H "Content-Type: application/json")
 DNS_ID=$(echo "$DNS_RESP" | jq -r '.result[0].id // empty')
 DNS_PAYLOAD="{\"type\":\"CNAME\",\"name\":\"${CF_DOMAIN}\",\"content\":\"${CNAME}\",\"proxied\":true,\"ttl\":1}"
-
 if [[ -z "$DNS_ID" ]]; then
     cf_api POST "/zones/${ZONE_ID}/dns_records" --data "$DNS_PAYLOAD" >/dev/null
     log "DNS record created."
@@ -187,12 +183,9 @@ else
 fi
 
 log "Installing systemd units..."
-sed "s|__MCP_PORT__|${MCP_PORT}|g; s|__INSTALL_DIR__|${INSTALL_DIR}|g; s|__SERVICE_USER__|${SERVICE_USER}|g; s|__MCP_AUTH_TOKEN__|${MCP_AUTH_TOKEN}|g" \
+# Only substitute __SERVICE_USER__ and __INSTALL_DIR__ — port/token now come from EnvironmentFile
+sed "s|__SERVICE_USER__|${SERVICE_USER}|g; s|__INSTALL_DIR__|${INSTALL_DIR}|g" \
     ssh-mcp-server.service > /etc/systemd/system/ssh-mcp-server.service
-
-grep -q "MCP_PORT=${MCP_PORT}" /etc/systemd/system/ssh-mcp-server.service \
-    || die "Unit file sanity check failed: MCP_PORT=${MCP_PORT} not found in installed unit."
-
 install -m644 cloudflared.slice   /etc/systemd/system/cloudflared.slice
 install -m644 cloudflared.service /etc/systemd/system/cloudflared.service
 
@@ -204,7 +197,7 @@ sleep 2
 if ss -tlnp | grep -q ":${MCP_PORT} "; then
     log "Service is listening on port ${MCP_PORT}. "
 else
-    warn "Service not yet on port ${MCP_PORT}. Check: journalctl -u ssh-mcp-server.service"
+    warn "Not yet on port ${MCP_PORT}. Check: journalctl -u ssh-mcp-server.service"
 fi
 
 echo ""
