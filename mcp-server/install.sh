@@ -24,7 +24,6 @@ cf_api() {
 : "${CF_TOKEN:?CF_TOKEN required}"
 : "${CF_DOMAIN:?CF_DOMAIN required}"
 MCP_PORT="${MCP_PORT:-8080}"
-# TUNNEL_NAME can be overridden per-installation to avoid conflicts between machines
 TUNNEL_NAME="${TUNNEL_NAME:-ssh-mcp-tunnel}"
 INSTALL_DIR="/opt/ssh-mcp-server"
 SERVICE_USER="mcpserver"
@@ -42,6 +41,20 @@ log "Hostname    : $CF_DOMAIN"
 log "Zone        : $ZONE_NAME"
 log "Port        : $MCP_PORT"
 log "Tunnel name : $TUNNEL_NAME"
+
+# Stop any running instance BEFORE touching files so the port is freed
+log "Stopping existing services (if any)..."
+systemctl stop ssh-mcp-server.service 2>/dev/null || true
+systemctl stop cloudflared.service    2>/dev/null || true
+# Wait until the port is actually free
+for i in $(seq 1 10); do
+    ss -tlnp | grep -q ":${MCP_PORT} " || break
+    warn "Port ${MCP_PORT} still in use, waiting... (${i}/10)"
+    sleep 1
+done
+if ss -tlnp | grep -q ":${MCP_PORT} "; then
+    die "Port ${MCP_PORT} is still occupied after stopping services. Free it manually."
+fi
 
 log "Installing packages..."
 apt-get update -qq
@@ -61,11 +74,9 @@ fi
 id "$SERVICE_USER" >/dev/null 2>&1 \
     || useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
 
-# Give mcpserver passwordless sudo
 log "Configuring sudoers for $SERVICE_USER..."
 echo "${SERVICE_USER} ALL=(ALL) NOPASSWD: ALL" > "$SUDOERS_FILE"
 chmod 440 "$SUDOERS_FILE"
-log "Sudoers configured."
 
 log "Installing MCP server..."
 mkdir -p "$INSTALL_DIR" "$CF_DIR"
@@ -75,7 +86,6 @@ python3 -m venv "$INSTALL_DIR/.venv"
 "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" -q
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
-# Restore token from backup (survives uninstall), else reuse existing, else generate new
 AUTH_TOKEN_FILE="$INSTALL_DIR/.auth_token"
 if [[ -f "$TOKEN_BACKUP" ]]; then
     MCP_AUTH_TOKEN=$(cat "$TOKEN_BACKUP")
@@ -124,7 +134,7 @@ if [[ -z "$TUNNEL_ID" ]]; then
 else
     warn "Tunnel '$TUNNEL_NAME' already exists (ID: $TUNNEL_ID), reusing."
     warn "Skipping ingress reconfiguration to avoid overwriting other installations sharing this tunnel."
-    warn "To force ingress update, delete the tunnel first or set FORCE_INGRESS=1."
+    warn "To force ingress update, set FORCE_INGRESS=1."
     if [[ -z "$TUNNEL_TOKEN" ]]; then
         TUNNEL_TOKEN=$(cf_api GET "/accounts/${ACCOUNT_ID}/cfd_tunnel/${TUNNEL_ID}/token" | jq -r '.result')
     fi
@@ -134,12 +144,10 @@ fi
 echo "$TUNNEL_TOKEN" > "$CF_DIR/token"
 chmod 600 "$CF_DIR/token"
 
-# Save tunnel name and ID so uninstall.sh knows which tunnel to delete
 echo "$TUNNEL_NAME" > "$CF_DIR/tunnel_name"
 echo "$TUNNEL_ID"   > "$CF_DIR/tunnel_id"
 echo "$ACCOUNT_ID"  > "$CF_DIR/account_id"
 
-# Configure ingress only for new tunnels OR when explicitly forced
 if [[ "$TUNNEL_IS_NEW" == true ]] || [[ "${FORCE_INGRESS:-0}" == "1" ]]; then
     log "Configuring tunnel ingress rules for $CF_DOMAIN -> localhost:$MCP_PORT ..."
     INGRESS_PAYLOAD=$(jq -n \
@@ -179,12 +187,25 @@ fi
 log "Installing systemd units..."
 sed "s|__MCP_PORT__|${MCP_PORT}|g; s|__INSTALL_DIR__|${INSTALL_DIR}|g; s|__SERVICE_USER__|${SERVICE_USER}|g; s|__MCP_AUTH_TOKEN__|${MCP_AUTH_TOKEN}|g" \
     ssh-mcp-server.service > /etc/systemd/system/ssh-mcp-server.service
+
+# Sanity check: verify the substitution actually worked
+grep -q "MCP_PORT=${MCP_PORT}" /etc/systemd/system/ssh-mcp-server.service \
+    || die "Unit file sanity check failed: MCP_PORT=${MCP_PORT} not found in installed unit. Check ssh-mcp-server.service template."
+
 install -m644 cloudflared.slice   /etc/systemd/system/cloudflared.slice
 install -m644 cloudflared.service /etc/systemd/system/cloudflared.service
 
 systemctl daemon-reload
 systemctl enable --now ssh-mcp-server.service
 systemctl enable --now cloudflared.service
+
+# Verify the service actually started on the right port
+sleep 2
+if ss -tlnp | grep -q ":${MCP_PORT} "; then
+    log "Service is listening on port ${MCP_PORT}. "
+else
+    warn "Service does not appear to be listening on port ${MCP_PORT} yet. Check: journalctl -u ssh-mcp-server.service"
+fi
 
 echo ""
 echo -e "${GREEN}=== Done! ===${NC}"
