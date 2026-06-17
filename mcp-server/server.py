@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 HOST = os.getenv("MCP_HOST", "127.0.0.1")
 PORT = int(os.getenv("MCP_PORT", "8080"))
-VERSION = "1.30.0"
+VERSION = "1.31.0"
 
 mcp = FastMCP(
     "ssh-mcp-server",
@@ -140,7 +140,7 @@ def sftp_download(
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        # Public health check — no auth required, short-circuit immediately
+        # Public health check - no auth required, short-circuit immediately
         if request.method in ("GET", "HEAD") and request.url.path in ("/", "/health"):
             return JSONResponse(
                 {"status": "ok", "server": "ssh-mcp-server", "version": VERSION},
@@ -165,5 +165,11 @@ def create_app():
 
 if __name__ == "__main__":
     logger.info(f"Starting SSH MCP Server on {HOST}:{PORT}/mcp")
-    app = create_app()
-    uvicorn.run(app, host=HOST, port=PORT)
+    # Use mcp.run() which properly initializes the anyio task group lifespan
+    mcp.run(
+        transport="streamable-http",
+        host=HOST,
+        port=PORT,
+        path="/mcp",
+        middleware=[AuthMiddleware],
+    )
