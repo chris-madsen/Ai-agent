@@ -1,7 +1,8 @@
 [Unit]
 Description=Cloudflare Tunnel
-After=network-online.target
+After=network-online.target ssh-mcp-server.service
 Wants=network-online.target
+Requires=ssh-mcp-server.service
 
 [Service]
 Type=simple
