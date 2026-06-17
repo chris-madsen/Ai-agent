@@ -11,16 +11,13 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from starlette.routing import Route
-from starlette.applications import Starlette
-from starlette.middleware import Middleware
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 HOST = os.getenv("MCP_HOST", "127.0.0.1")
 PORT = int(os.getenv("MCP_PORT", "8080"))
-VERSION = "1.29.0"
+VERSION = "1.30.0"
 
 mcp = FastMCP(
     "ssh-mcp-server",
@@ -139,21 +136,17 @@ def sftp_download(
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
-# ---------- Health check (no auth required) ----------
-
-async def health_check(request: Request):
-    """Public health check endpoint for Perplexity connector validation."""
-    return JSONResponse({"status": "ok", "server": "ssh-mcp-server", "version": VERSION})
-
-
-# ---------- Auth middleware ----------
+# ---------- Auth + health check middleware ----------
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        # Health check path is always public
-        if request.method in ("GET", "HEAD") and request.url.path == "/":
-            return await call_next(request)
-        # Read at request time so tests and server always use the same live env value.
+        # Public health check — no auth required, short-circuit immediately
+        if request.method in ("GET", "HEAD") and request.url.path in ("/", "/health"):
+            return JSONResponse(
+                {"status": "ok", "server": "ssh-mcp-server", "version": VERSION},
+                status_code=200,
+            )
+        # All other routes require Bearer token
         auth_token = os.getenv("MCP_AUTH_TOKEN", "")
         if auth_token and request.headers.get("Authorization") != f"Bearer {auth_token}":
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
@@ -163,16 +156,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
 # ---------- App factory ----------
 
 def create_app():
-    mcp_app = mcp.streamable_http_app()
-    mcp_app.add_middleware(AuthMiddleware)
-
-    # Mount health check route at root before MCP app
-    from starlette.routing import Mount
-    from starlette.applications import Starlette
-    app = Starlette(routes=[
-        Route("/", health_check, methods=["GET", "HEAD"]),
-        Mount("/", app=mcp_app),
-    ])
+    app = mcp.streamable_http_app()
+    app.add_middleware(AuthMiddleware)
     return app
 
 
