@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 HOST = os.getenv("MCP_HOST", "127.0.0.1")
 PORT = int(os.getenv("MCP_PORT", "8080"))
-VERSION = "1.32.0"
+VERSION = "1.33.0"
 
 mcp = FastMCP(
     "ssh-mcp-server",
@@ -166,5 +166,4 @@ def create_app():
 if __name__ == "__main__":
     logger.info(f"Starting SSH MCP Server on {HOST}:{PORT}/mcp")
     app = create_app()
-    # lifespan='on' ensures anyio task group is initialized via ASGI lifespan events
-    uvicorn.run(app, host=HOST, port=PORT, lifespan="on")
+    uvicorn.run(app, host=HOST, port=PORT)
